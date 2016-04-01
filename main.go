@@ -66,7 +66,7 @@ func New(p string) *nginxCollector {
 		ConstLabels: prometheus.Labels{
 			"handler": "nginx-log-exporter",
 		},
-	}, []string{"method", "code"})
+	}, []string{"method", "code", "file"})
 	reqCv := prometheus.MustRegisterOrGet(cv).(*prometheus.CounterVec)
 	return &nginxCollector{
 		pattern: p,
@@ -94,6 +94,7 @@ func (n *nginxCollector) running() bool {
 func (n *nginxCollector) Run() {
 	logrus.Debugf("Watching pattern %s ...", n.pattern)
 	for {
+		n.t0 = time.Now().UTC()
 		n.start()
 		for _, fn := range globFiles(n.pattern) {
 			go n.watchFilename(fn)
@@ -146,7 +147,7 @@ func (n *nginxCollector) watchFile(fn string) error {
 			line = bytes.TrimRight(line, "\n\r")
 			if len(line) > 0 {
 				lines++
-				if err := n.parseLine(line); err != nil {
+				if err := n.parseLine(fn, line); err != nil {
 					logrus.Debugf("Failed to parse line %s: %s", string(line), err)
 				}
 			}
@@ -170,7 +171,7 @@ func (n *nginxCollector) watchFile(fn string) error {
 	}
 }
 
-func (n *nginxCollector) parseLine(ln []byte) error {
+func (n *nginxCollector) parseLine(fn string, ln []byte) error {
 	var ll logline
 	err := json.Unmarshal(ln, &ll)
 	if err != nil {
@@ -180,7 +181,7 @@ func (n *nginxCollector) parseLine(ln []byte) error {
 	if ll.Timestamp.UTC().Before(n.t0) {
 		return fmt.Errorf("Ignoring old request: %s < %s", ll.Timestamp.UTC().Format(time.RFC3339), n.t0.Format(time.RFC3339))
 	}
-	n.reqs.WithLabelValues(strings.ToLower(ll.Fields.Method), ll.Fields.Code).Inc()
+	n.reqs.WithLabelValues(strings.ToLower(ll.Fields.Method), ll.Fields.Code, fn).Inc()
 	return nil
 }
 
@@ -199,7 +200,7 @@ func main() {
 	nc := New(*pattern)
 	go nc.Run()
 
-	http.Handle("/metrics", prometheus.Handler())
+	http.Handle("/metrics", prometheus.UninstrumentedHandler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
 		<head><title>nginx Log Exporter</title></head>
