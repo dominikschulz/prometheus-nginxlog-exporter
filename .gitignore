@@ -1,1 +1,4 @@
 prometheus-nginxlog-exporter
+.build/
+dependencies-stamp
+nginxlog_exporter
