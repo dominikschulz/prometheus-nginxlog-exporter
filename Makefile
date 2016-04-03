@@ -14,5 +14,6 @@
 VERSION  := 0.1.0
 TARGET   := nginxlog_exporter
 GOFLAGS  := -ldflags "-X main.Version=$(VERSION)"
+GO_VERSION := 1.6
 
 include Makefile.COMMON
