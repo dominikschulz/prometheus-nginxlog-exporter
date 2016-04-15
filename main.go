@@ -18,12 +18,16 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/log"
+	"github.com/satyrius/gonx"
 )
 
 var Version = "0.0.0.dev"
 var addr = flag.String("web.listen-address", ":9117", "The address to listen on for HTTP requests.")
 var pattern = flag.String("file.pattern", "/var/log/nginx/*.log", "The log pattern")
 var sleep = 10 * time.Second
+var combined = `$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"`
+var isJson = flag.Bool("file.json", false, "Logformat JSON")
+var parser *gonx.Parser
 
 func init() {
 	lvlStr := os.Getenv("LOGLEVEL")
@@ -33,6 +37,7 @@ func init() {
 			logrus.SetLevel(lvl)
 		}
 	}
+	parser = gonx.NewParser(combined)
 }
 
 type logfields struct {
@@ -173,9 +178,27 @@ func (n *nginxCollector) watchFile(fn string) error {
 
 func (n *nginxCollector) parseLine(fn string, ln []byte) error {
 	var ll logline
-	err := json.Unmarshal(ln, &ll)
-	if err != nil {
-		return err
+	if *isJson {
+		err := json.Unmarshal(ln, &ll)
+		if err != nil {
+			return err
+		}
+	} else {
+		ge, err := parser.ParseString(string(ln))
+		if err != nil {
+			return err
+		}
+		ll = logline{
+			Timestamp: time.Now(), // TODO parse timestamp from ge["time_local"]
+			Fields:    logfields{},
+		}
+		ll.Fields.RemoteAddr, _ = ge.Field("remote_addr")
+		ll.Fields.RemoteUser, _ = ge.Field("remote_user")
+		ll.Fields.BodyBytesSent, _ = ge.Field("body_bytes_sent")
+		ll.Fields.Code, _ = ge.Field("status")
+		ll.Fields.Request, _ = ge.Field("request") // TODO split request in method + request + proto
+		ll.Fields.Referer, _ = ge.Field("http_referer")
+		ll.Fields.UserAgent, _ = ge.Field("http_user_agent")
 	}
 	//fmt.Printf("Line: %+v\n", ll)
 	if ll.Timestamp.UTC().Before(n.t0) {
