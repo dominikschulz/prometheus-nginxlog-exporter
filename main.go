@@ -20,13 +20,20 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/log"
+	"github.com/satyrius/gonx"
 )
 
-var Version = "0.0.0.dev"
-var addr = flag.String("web.listen-address", ":9117", "The address to listen on for HTTP requests.")
-var pattern = flag.String("file.pattern", "/var/log/nginx/*.log", "The log pattern")
-var rescan = flag.String("file.rescan", "10", "Rescan interval in minutes")
-var sleep = 10 * time.Second
+var (
+	Version    = "0.0.0.dev"
+	addr       = flag.String("web.listen-address", ":9117", "The address to listen on for HTTP requests.")
+	pattern    = flag.String("file.pattern", "/var/log/nginx/*.log", "The log pattern")
+	rescan     = flag.String("file.rescan", "10", "Rescan interval in minutes")
+	sleep      = 10 * time.Second
+	combined   = `$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"`
+	isJson     = flag.Bool("file.json", false, "Logformat JSON")
+	parser     *gonx.Parser
+	timeFormat = "02/Jan/2006:15:04:05 -0700"
+)
 
 func init() {
 	lvlStr := os.Getenv("LOGLEVEL")
@@ -36,6 +43,7 @@ func init() {
 			logrus.SetLevel(lvl)
 		}
 	}
+	parser = gonx.NewParser(combined)
 }
 
 type logfields struct {
@@ -198,9 +206,37 @@ LINE:
 func (n *nginxCollector) parseLine(fn string, ln []byte) error {
 	// TODO(dschulz) support plain format
 	var ll logline
-	err := json.Unmarshal(ln, &ll)
-	if err != nil {
-		return err
+	if *isJson {
+		err := json.Unmarshal(ln, &ll)
+		if err != nil {
+			return err
+		}
+	} else {
+		ge, err := parser.ParseString(string(ln))
+		if err != nil {
+			return err
+		}
+		tl, _ := ge.Field("time_local")
+		ts, err := time.Parse(timeFormat, tl)
+		if err != nil {
+			return err
+		}
+		ll = logline{
+			Timestamp: ts,
+			Fields:    logfields{},
+		}
+		ll.Fields.RemoteAddr, _ = ge.Field("remote_addr")
+		ll.Fields.RemoteUser, _ = ge.Field("remote_user")
+		ll.Fields.BodyBytesSent, _ = ge.Field("body_bytes_sent")
+		ll.Fields.Code, _ = ge.Field("status")
+		req, _ := ge.Field("request")
+		p := strings.Split(req, " ")
+		if len(p) > 1 {
+			ll.Fields.Method = p[0]
+			ll.Fields.Request = p[1]
+		}
+		ll.Fields.Referer, _ = ge.Field("http_referer")
+		ll.Fields.UserAgent, _ = ge.Field("http_user_agent")
 	}
 	if ll.Timestamp.UTC().Before(n.t0) {
 		return fmt.Errorf("Ignoring old request: %s < %s", ll.Timestamp.UTC().Format(time.RFC3339), n.t0.Format(time.RFC3339))
